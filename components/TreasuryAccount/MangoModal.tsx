@@ -37,6 +37,10 @@ import Switch from '@components/Switch'
 import { InstructionDataWithHoldUpTime } from 'actions/createProposal'
 import ProgramSelector from '@components/Mango/ProgramSelector'
 import useProgramSelector from '@components/Mango/useProgramSelector'
+import ButtonGroup from '@components/ButtonGroup'
+
+const DEPOSIT = 'Deposit'
+const WITHDRAW = 'Withdraw'
 
 const MangoModal = ({ account }: { account: AssetAccount }) => {
   const { canUseTransferInstruction } = useGovernanceAssets()
@@ -56,6 +60,7 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
   )
   const [mangoAccounts, setMangoAccounts] = useState<MangoAccount[]>([])
   const [form, setForm] = useState<{
+    proposalType: 'Deposit' | 'Withdraw'
     mangoAccount: MangoAccount | null | undefined
     accountName: string
     amount: number
@@ -64,12 +69,9 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
     delegate: boolean
     delegateWallet: string
   }>({
+    proposalType: 'Deposit',
     accountName: '',
-    title: `Deposit ${
-      tokenPriceService.getTokenInfo(
-        account.extensions.mint!.publicKey.toBase58()
-      )?.symbol || 'tokens'
-    } to the Mango`,
+    title: getProposalTitle('Deposit'),
     description: '',
     amount: 0,
     mangoAccount: undefined,
@@ -78,9 +80,28 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
   })
   const [formErrors, setFormErrors] = useState({})
 
-  const handleSetForm = ({ propertyName, value }) => {
+  const tabs = [DEPOSIT, WITHDRAW]
+
+  const handleSetForm = <
+    K extends keyof typeof form,
+    V extends typeof form[K]
+  >({
+    propertyName,
+    value,
+  }: {
+    propertyName: K
+    value: V
+  }) => {
     setForm({ ...form, [propertyName]: value })
     setFormErrors({})
+  }
+
+  function getProposalTitle(proposalType: string) {
+    return `${proposalType} ${
+      tokenPriceService.getTokenInfo(
+        account.extensions.mint!.publicKey.toBase58()
+      )?.symbol || 'tokens'
+    } ${proposalType === DEPOSIT ? 'to' : 'from'} the Mango`
   }
 
   useEffect(() => {
@@ -105,6 +126,10 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
   const currentPrecision = precision(mintMinAmount)
 
   const schema = yup.object().shape({
+    proposalType: yup
+      .mixed()
+      .oneOf([DEPOSIT, WITHDRAW])
+      .required('Proposal type is required'),
     mangoAccount: yup
       .object()
       .nullable(true)
@@ -138,6 +163,7 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
   useEffect(() => {
     setMangoAccounts([])
   }, [programSelectorHook.program?.val])
+
   useEffect(() => {
     const getMangoAccounts = async () => {
       const accounts = await mangoClient?.getMangoAccountsForOwner(
@@ -156,10 +182,39 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
     }
   }, [account.extensions.token, mangoClient, mangoGroup])
 
-  const handleCreateAccount = async () => {
+  const handleProposal = async () => {
     const isValid = await validateInstruction({ schema, form, setFormErrors })
     if (!isValid) return
 
+    if (form.proposalType === DEPOSIT) {
+      handleDeposit()
+    } else if (form.proposalType === WITHDRAW) {
+      handleWithdraw()
+    } else {
+      console.log('Invalid proposal type')
+    }
+  }
+
+  const handleWithdraw = async () => {
+    if (!form.mangoAccount || !mangoGroup) return
+
+    // check if the account has enough balance
+    const assetsValue = toUiDecimals(
+      form.mangoAccount.getAssetsValue(mangoGroup),
+      10
+    )
+
+    if (assetsValue < form.amount) {
+      setFormErrors({
+        amount: `Insufficient balance. You have ${assetsValue} in the account`,
+      })
+      return
+    }
+
+    // TODO: implement the actual withdraw logic
+  }
+
+  const handleDeposit = async () => {
     try {
       setIsProposing(true)
       const instructions: InstructionDataWithHoldUpTime[] = []
@@ -302,6 +357,25 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
           <h3>Mango</h3>
         </div>
       </div>
+      <div className="py-4">
+        <ButtonGroup
+          activeValue={form.proposalType}
+          className="h-10"
+          onChange={(v) => {
+            setForm((prev) => ({
+              ...prev,
+              proposalType: v,
+              amount: 0,
+              title: getProposalTitle(v),
+              accountName: '',
+              mangoAccount:
+                prev.mangoAccount === null ? undefined : prev.mangoAccount,
+            }))
+            setFormErrors({})
+          }}
+          values={tabs}
+        />
+      </div>
       <div className="pt-2 space-y-4 w-full">
         {account.extensions.mint?.publicKey.toBase58() ===
           USDC_MINT.toBase58() && (
@@ -332,7 +406,7 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
           }
         >
           {isLoadingMangoAccount && !mangoAccounts.length ? (
-            <div className="text-center py-4">Loading accounts...</div>
+            <div className="text-center py-3">Loading accounts...</div>
           ) : (
             mangoAccounts.map((x) => (
               <Select.Option key={x.publicKey.toBase58()} value={x}>
@@ -344,11 +418,19 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
             ))
           )}
 
-          <Select.Option key={null} value={null}>
-            <div>Create new account</div>
-          </Select.Option>
+          {form.proposalType === WITHDRAW &&
+            !isLoadingMangoAccount &&
+            !mangoAccounts.length && (
+              <div className="text-center py-3">No account found</div>
+            )}
+
+          {form.proposalType === DEPOSIT && (
+            <Select.Option key={null} value={null}>
+              <div>Create new account</div>
+            </Select.Option>
+          )}
         </Select>
-        {form.mangoAccount === null && (
+        {form.mangoAccount === null && form.proposalType === DEPOSIT && (
           <Input
             error={formErrors['accountName']}
             label="Account name"
@@ -364,20 +446,22 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
         )}
         <div className="flex mb-1.5 text-sm">
           Amount
-          <div className="ml-auto flex items-center text-xs">
-            {maxAmountFtm}
-            <LinkButton
-              className="font-bold ml-2 text-primary-light"
-              onClick={() => {
-                handleSetForm({
-                  propertyName: 'amount',
-                  value: maxAmount.toNumber(),
-                })
-              }}
-            >
-              Max
-            </LinkButton>
-          </div>
+          {form.proposalType === DEPOSIT && (
+            <div className="ml-auto flex items-center text-xs">
+              {maxAmountFtm}
+              <LinkButton
+                className="font-bold ml-2 text-primary-light"
+                onClick={() => {
+                  handleSetForm({
+                    propertyName: 'amount',
+                    value: maxAmount.toNumber(),
+                  })
+                }}
+              >
+                Max
+              </LinkButton>
+            </div>
+          )}
         </div>
         <Input
           error={formErrors['amount']}
@@ -389,7 +473,7 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
           onChange={(e) =>
             handleSetForm({
               propertyName: 'amount',
-              value: e.target.value,
+              value: +e.target.value,
             })
           }
           onBlur={() => {
@@ -454,7 +538,7 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
           <Button
             isLoading={isProposing}
             disabled={isProposing || !canUseTransferInstruction}
-            onClick={handleCreateAccount}
+            onClick={handleProposal}
             className="w-full"
           >
             <Tooltip
@@ -464,7 +548,7 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
                   : ''
               }
             >
-              <div>Propose</div>
+              <div>Propose {form.proposalType}</div>
             </Tooltip>
           </Button>
         </div>
