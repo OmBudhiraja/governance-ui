@@ -186,35 +186,27 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
     const isValid = await validateInstruction({ schema, form, setFormErrors })
     if (!isValid) return
 
-    if (form.proposalType === DEPOSIT) {
-      handleDeposit()
-    } else if (form.proposalType === WITHDRAW) {
-      handleWithdraw()
-    } else {
-      console.log('Invalid proposal type')
+    if (form.proposalType === WITHDRAW) {
+      // check if the account has enough balance
+      if (!form.mangoAccount || !mangoGroup) return
+
+      const bank = mangoGroup.getFirstBankByMint(
+        account.extensions.mint!.publicKey!
+      )
+
+      const accountBalance = form.mangoAccount.getTokenBalanceUi(bank)
+
+      if (accountBalance < form.amount) {
+        setFormErrors({
+          amount: `Insufficient balance. You have ${accountBalance} in the account`,
+        })
+        return
+      }
     }
+    handleCreateAccount()
   }
 
-  const handleWithdraw = async () => {
-    if (!form.mangoAccount || !mangoGroup) return
-
-    // check if the account has enough balance
-    const assetsValue = toUiDecimals(
-      form.mangoAccount.getAssetsValue(mangoGroup),
-      10
-    )
-
-    if (assetsValue < form.amount) {
-      setFormErrors({
-        amount: `Insufficient balance. You have ${assetsValue} in the account`,
-      })
-      return
-    }
-
-    // TODO: implement the actual withdraw logic
-  }
-
-  const handleDeposit = async () => {
+  const handleCreateAccount = async () => {
     try {
       setIsProposing(true)
       const instructions: InstructionDataWithHoldUpTime[] = []
@@ -272,8 +264,12 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
         account.extensions.mint!.account!.decimals
       )
 
-      const depositIx = await mangoClient!.program.methods
-        .tokenDeposit(tokens, false)
+      const proposalTypeMethod =
+        form.proposalType === DEPOSIT
+          ? mangoClient!.program.methods.tokenDeposit
+          : mangoClient!.program.methods.tokenWithdraw
+
+      const depositIx = await proposalTypeMethod(tokens, false)
         .accounts({
           group: mangoGroup!.publicKey,
           account: mangoAccountPk,
@@ -282,7 +278,9 @@ const MangoModal = ({ account }: { account: AssetAccount }) => {
           vault: bank.vault,
           oracle: bank.oracle,
           tokenAccount: account.pubkey,
-          tokenAuthority: account.extensions.token!.account.owner!,
+          ...(form.proposalType === DEPOSIT && {
+            tokenAuthority: account.extensions.token!.account.owner!,
+          }),
         })
         .remainingAccounts(
           [bank.publicKey, bank.oracle].map(
